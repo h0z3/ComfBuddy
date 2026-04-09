@@ -8,11 +8,14 @@ Listens to ComfyUI events via WebSocket for live reactions
 import sys
 import os
 import json
+import math
 import socket
 import subprocess
 import threading
-import winsound
+import platform
 from pathlib import Path
+
+PLATFORM = platform.system()  # "Windows", "Darwin", "Linux"
 
 # ─── Singleton lock ───────────────────────────────────────────────────────────
 # Bind a localhost TCP port to guarantee only one buddy runs at a time.
@@ -53,9 +56,18 @@ except ImportError:
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
+def _default_output_folder() -> str:
+    home = Path.home()
+    if PLATFORM == "Windows":
+        return str(home / "AppData" / "Roaming" / "ComfyUI" / "output")
+    elif PLATFORM == "Darwin":
+        return str(home / "Library" / "Application Support" / "ComfyUI" / "output")
+    else:
+        return str(home / "comfyui" / "output")
+
 DEFAULTS = {
     "comfyui_url":   "http://127.0.0.1:8188",
-    "output_folder": str(Path.home() / "AppData" / "Roaming" / "ComfyUI" / "output"),
+    "output_folder": _default_output_folder(),
     "position":      [200, 200],
     "scale":         4,
 }
@@ -262,27 +274,65 @@ class BuddyWidget(QWidget):
     # ── sounds ───────────────────────────────────────────────────────────────
 
     @staticmethod
+    def _beep(freq: int, duration_ms: int):
+        """Cross-platform beep. Falls back to terminal bell."""
+        if PLATFORM == "Windows":
+            import winsound
+            winsound.Beep(freq, duration_ms)
+        elif PLATFORM == "Darwin":
+            # macOS: use afplay with a generated tone via say, or just beep
+            os.system("afplay /System/Library/Sounds/Tink.aiff")
+        else:
+            # Linux: try beep command, then paplay, then terminal bell
+            result = subprocess.run(
+                ["beep", "-f", str(freq), "-l", str(duration_ms)],
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                print("\a", end="", flush=True)
+
+    @staticmethod
     def _play_sound_success():
-        """Play a happy 'ding' sound on success."""
-        threading.Thread(
-            target=lambda: (
-                winsound.Beep(880, 150),  # A5
-                winsound.Beep(1100, 150), # ~C#6
-                winsound.Beep(1320, 250), # E6
-            ),
-            daemon=True,
-        ).start()
+        """Play a happy ascending chime on success."""
+        def _play():
+            if PLATFORM == "Windows":
+                import winsound
+                winsound.Beep(880, 150)   # A5
+                winsound.Beep(1100, 150)  # ~C#6
+                winsound.Beep(1320, 250)  # E6
+            elif PLATFORM == "Darwin":
+                for _ in range(2):
+                    os.system("afplay /System/Library/Sounds/Tink.aiff")
+            else:
+                # Linux: 3 ascending beeps or terminal bell
+                for freq in [880, 1100, 1320]:
+                    subprocess.run(
+                        ["beep", "-f", str(freq), "-l", "150"],
+                        capture_output=True,
+                    )
+                else:
+                    print("\a", end="", flush=True)
+        threading.Thread(target=_play, daemon=True).start()
 
     @staticmethod
     def _play_sound_error():
-        """Play a descending 'buzz' sound on error."""
-        threading.Thread(
-            target=lambda: (
-                winsound.Beep(400, 200),
-                winsound.Beep(300, 300),
-            ),
-            daemon=True,
-        ).start()
+        """Play a descending buzz on error."""
+        def _play():
+            if PLATFORM == "Windows":
+                import winsound
+                winsound.Beep(400, 200)
+                winsound.Beep(300, 300)
+            elif PLATFORM == "Darwin":
+                os.system("afplay /System/Library/Sounds/Basso.aiff")
+            else:
+                for freq in [400, 300]:
+                    subprocess.run(
+                        ["beep", "-f", str(freq), "-l", "200"],
+                        capture_output=True,
+                    )
+                else:
+                    print("\a", end="", flush=True)
+        threading.Thread(target=_play, daemon=True).start()
 
     # ── animation tick ───────────────────────────────────────────────────────
 
@@ -368,7 +418,6 @@ class BuddyWidget(QWidget):
 
         # --- sparkle particles on success ---
         if self._state == STATE_SUCCESS and self._reaction_remaining > 0:
-            import math
             tick = REACTION_TICKS - self._reaction_remaining
             for i in range(6):
                 angle = (tick * 0.3 + i * math.pi / 3)
@@ -408,7 +457,7 @@ class BuddyWidget(QWidget):
                 background-color: #111a11;
                 color: #88dd88;
                 border: 1px solid #2a5a2a;
-                font-family: Consolas, monospace;
+                font-family: Consolas, "SF Mono", "DejaVu Sans Mono", monospace;
                 font-size: 12px;
                 padding: 4px;
             }
@@ -457,52 +506,92 @@ class BuddyWidget(QWidget):
 
     def action_restart(self):
         """Kill the ComfyUI Desktop process, then relaunch it."""
-        PROC_NAMES = [
-            "ComfyUI Desktop.exe",
-            "ComfyUI.exe",
-            "comfyui-electron.exe",
-        ]
         killed = False
-        for name in PROC_NAMES:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True,
-            )
-            if name in result.stdout:
-                subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True)
-                print(f"[ComfBuddy] Sonlandirildi: {name}")
-                killed = True
-                break
+
+        if PLATFORM == "Windows":
+            PROC_NAMES = [
+                "ComfyUI Desktop.exe",
+                "ComfyUI.exe",
+                "comfyui-electron.exe",
+            ]
+            for name in PROC_NAMES:
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True,
+                )
+                if name in result.stdout:
+                    subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True)
+                    print(f"[ComfBuddy] Terminated: {name}")
+                    killed = True
+                    break
+        else:
+            # macOS / Linux: use pkill
+            PROC_PATTERNS = ["ComfyUI Desktop", "ComfyUI", "comfyui-electron"]
+            for pattern in PROC_PATTERNS:
+                result = subprocess.run(
+                    ["pkill", "-f", pattern],
+                    capture_output=True,
+                )
+                if result.returncode == 0:
+                    print(f"[ComfBuddy] Terminated: {pattern}")
+                    killed = True
+                    break
 
         if not killed:
-            print("[ComfBuddy] ComfyUI prosesi bulunamadi")
+            print("[ComfBuddy] ComfyUI process not found")
 
         # Relaunch after 2 s
         QTimer.singleShot(2000, self._launch_comfyui)
 
     def _launch_comfyui(self):
-        candidates = [
-            Path.home() / "AppData" / "Local" / "Programs" / "comfyui-electron" / "ComfyUI Desktop.exe",
-            Path.home() / "AppData" / "Local" / "Programs" / "ComfyUI Desktop"  / "ComfyUI Desktop.exe",
-            Path("C:/Program Files/ComfyUI Desktop/ComfyUI Desktop.exe"),
-            Path("C:/Program Files (x86)/ComfyUI Desktop/ComfyUI Desktop.exe"),
-        ]
+        home = Path.home()
+
+        if PLATFORM == "Windows":
+            candidates = [
+                home / "AppData" / "Local" / "Programs" / "comfyui-electron" / "ComfyUI Desktop.exe",
+                home / "AppData" / "Local" / "Programs" / "ComfyUI Desktop" / "ComfyUI Desktop.exe",
+                Path("C:/Program Files/ComfyUI Desktop/ComfyUI Desktop.exe"),
+                Path("C:/Program Files (x86)/ComfyUI Desktop/ComfyUI Desktop.exe"),
+            ]
+        elif PLATFORM == "Darwin":
+            candidates = [
+                Path("/Applications/ComfyUI Desktop.app/Contents/MacOS/ComfyUI Desktop"),
+                home / "Applications" / "ComfyUI Desktop.app" / "Contents" / "MacOS" / "ComfyUI Desktop",
+            ]
+        else:
+            candidates = [
+                Path("/usr/bin/comfyui-desktop"),
+                Path("/opt/ComfyUI Desktop/comfyui-desktop"),
+                home / ".local" / "bin" / "comfyui-desktop",
+            ]
+
         for path in candidates:
             if path.exists():
                 subprocess.Popen([str(path)])
-                print(f"[ComfBuddy] Baslatildi: {path}")
+                print(f"[ComfBuddy] Launched: {path}")
                 return
-        # Last-resort: let Windows find it by name
-        subprocess.Popen(["start", "", "ComfyUI Desktop"], shell=True)
-        print("[ComfBuddy] Baslatma komutu gonderildi (shell)")
+
+        # Last-resort: let the OS find it
+        if PLATFORM == "Windows":
+            subprocess.Popen(["start", "", "ComfyUI Desktop"], shell=True)
+        elif PLATFORM == "Darwin":
+            subprocess.Popen(["open", "-a", "ComfyUI Desktop"])
+        else:
+            subprocess.Popen(["xdg-open", "comfyui-desktop"])
+        print("[ComfBuddy] Launch command sent (shell fallback)")
 
     def action_open_output(self):
         folder = self.cfg["output_folder"]
         if os.path.isdir(folder):
-            os.startfile(folder)
+            if PLATFORM == "Windows":
+                os.startfile(folder)
+            elif PLATFORM == "Darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
         else:
-            print(f"[ComfBuddy] Output klasoru yok: {folder}")
-            print("  config.json icindeki 'output_folder' degerini guncelle")
+            print(f"[ComfBuddy] Output folder not found: {folder}")
+            print("  Update 'output_folder' in config.json")
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

@@ -34,7 +34,7 @@
 
 ## Requirements
 
-- Windows 10 / 11
+- **Windows** 10 / 11, **macOS** 12+, or **Linux** (X11/Wayland with Qt6 support)
 - Python 3.9+
 - [ComfyUI Desktop](https://www.comfy.org/download) running locally (default port `8188`)
 
@@ -65,7 +65,11 @@ Then restart ComfyUI. The buddy will automatically launch in the background.
 **To disable auto-launch:**
 Set the environment variable before starting ComfyUI:
 ```bash
+# Windows
 set COMFBUDDY_AUTOLAUNCH=0
+
+# macOS / Linux
+export COMFBUDDY_AUTOLAUNCH=0
 ```
 
 ## Usage
@@ -91,7 +95,7 @@ drag. You can edit it to change defaults:
 | Field           | Description                                              |
 | --------------- | -------------------------------------------------------- |
 | `comfyui_url`   | Base URL of your running ComfyUI instance                |
-| `output_folder` | Folder opened by the **Open Output Folder** action       |
+| `output_folder` | Folder opened by **Open Output Folder** (auto-detected per OS) |
 | `position`      | Last saved window position (auto-updated on drag)        |
 | `scale`         | Pixel scale of the sprite (`4` = 64×64 px window)        |
 
@@ -116,8 +120,6 @@ isn't found in any of those, it falls back to `start ComfyUI Desktop` via the
 shell.
 
 ## Roadmap
-
-- [ ] Linux / macOS support
 - [ ] Configurable shortcut list
 - [ ] More animations (blink, hover reactions)
 - [ ] Custom sprite loader (drop in your own PNG / GIF)
