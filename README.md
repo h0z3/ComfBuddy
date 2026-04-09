@@ -1,19 +1,35 @@
 # ComfBuddy
 
-A tiny floating desktop companion for [ComfyUI](https://github.com/comfyanonymous/ComfyUI).
-A pixel-art green ghost that floats on your desktop and gives you quick shortcuts
-for the things you do every day with ComfyUI — right from a single right-click.
+<p align="center">
+  <img src="assets/banner.png" alt="ComfBuddy Banner" width="400">
+</p>
+
+<p align="center">
+  A floating pixel-art desktop buddy for <a href="https://github.com/comfyanonymous/ComfyUI">ComfyUI</a>.<br>
+  Right-click for quick shortcuts. Reacts to your generations in real time.
+</p>
+
+---
+
+<p align="center">
+  <img src="assets/buddy.png" alt="ComfBuddy Sprite" width="128">
+</p>
 
 ## Features
 
 - **Floating pixel-art buddy** — frameless, always-on-top, draggable anywhere on screen
 - **Idle bob animation** with a soft dynamic shadow
+- **Live ComfyUI integration** via WebSocket:
+  - Faster bob while generating
+  - **Jump + sparkle + sound** when generation completes
+  - **Red flash + error sound** on failure
 - **Right-click menu** with the shortcuts you actually need:
   - **Clear VRAM** — unloads models from VRAM via the ComfyUI `/free` endpoint
   - **Restart ComfyUI** — kills the ComfyUI Desktop process and relaunches it
   - **Open Output Folder** — opens your output directory in Explorer
   - **Quit**
 - **Position is remembered** between runs (saved to `config.json`)
+- **ComfyUI Custom Node** — auto-launches with ComfyUI
 - Single-file Python script — easy to read, easy to hack
 
 ## Requirements
@@ -106,6 +122,7 @@ shell.
 - [ ] More animations (blink, hover reactions)
 - [ ] Custom sprite loader (drop in your own PNG / GIF)
 - [ ] Notification toast when actions complete
+- [ ] Progress bar overlay during generation
 
 ## Contributing
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-ComfBuddy v0.1.0
+ComfBuddy v0.2.0
 Floating ComfyUI desktop companion — right-click for shortcuts
+Listens to ComfyUI events via WebSocket for live reactions
 """
 
 import sys
@@ -9,6 +10,8 @@ import os
 import json
 import socket
 import subprocess
+import threading
+import winsound
 from pathlib import Path
 
 # ─── Singleton lock ───────────────────────────────────────────────────────────
@@ -35,8 +38,14 @@ except ImportError:
     sys.exit(1)
 
 try:
+    import websocket
+except ImportError:
+    print("[ComfBuddy] Eksik paket: pip install websocket-client")
+    sys.exit(1)
+
+try:
     from PyQt6.QtWidgets import QApplication, QWidget, QMenu
-    from PyQt6.QtCore    import Qt, QTimer, QPoint
+    from PyQt6.QtCore    import Qt, QTimer, QPoint, pyqtSignal
     from PyQt6.QtGui     import QPainter, QColor
 except ImportError:
     print("[ComfBuddy] Eksik paket: pip install PyQt6")
@@ -111,18 +120,90 @@ SPRITE_W = 16
 SPRITE_H = 16
 
 # Smooth float cycle (logical pixel offsets, up = negative)
-BOB = [0, 0, -1, -1, -2, -2, -2, -1, -1, 0, 0, 1, 1, 2, 2, 2, 1, 1]
+BOB_IDLE = [0, 0, -1, -1, -2, -2, -2, -1, -1, 0, 0, 1, 1, 2, 2, 2, 1, 1]
+BOB_WORK = [0, -1, -2, -1, 0, 1, 2, 1]            # faster bob while generating
+BOB_JUMP = [0, -3, -6, -8, -9, -8, -6, -3, 0, 1, 0]  # celebratory jump
+
+# ─── Buddy states ────────────────────────────────────────────────────────────
+STATE_IDLE     = "idle"
+STATE_WORKING  = "working"      # ComfyUI is generating
+STATE_SUCCESS  = "success"      # generation just finished
+STATE_ERROR    = "error"        # generation failed
+
+# How many ticks the success / error animation lasts before returning to idle
+REACTION_TICKS = 20  # ~2 seconds at 100ms/tick
+
+
+# ─── WebSocket listener (runs in background thread) ──────────────────────────
+
+class ComfyWSListener(threading.Thread):
+    """Connect to ComfyUI's WebSocket and emit state changes via a callback."""
+
+    daemon = True
+
+    def __init__(self, url: str, on_state):
+        super().__init__()
+        self.ws_url = url.replace("http", "ws", 1) + "/ws?clientId=comfbuddy"
+        self.on_state = on_state   # callable(state_str)
+
+    def run(self):
+        while True:
+            try:
+                ws = websocket.WebSocketApp(
+                    self.ws_url,
+                    on_message=self._on_msg,
+                    on_error=self._on_err,
+                    on_close=self._on_close,
+                )
+                ws.run_forever(ping_interval=10, ping_timeout=5)
+            except Exception as e:
+                print(f"[ComfBuddy WS] Error: {e}")
+            # Reconnect after 5 s
+            import time
+            time.sleep(5)
+
+    def _on_msg(self, _ws, message):
+        try:
+            data = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            return
+        msg_type = data.get("type", "")
+        if msg_type == "execution_start":
+            self.on_state(STATE_WORKING)
+        elif msg_type == "executed":
+            pass  # individual node done, keep working
+        elif msg_type in ("execution_success",):
+            self.on_state(STATE_SUCCESS)
+        elif msg_type in ("execution_error", "execution_interrupted"):
+            self.on_state(STATE_ERROR)
+        elif msg_type == "status":
+            # If queue is empty, back to idle
+            q = data.get("data", {}).get("status", {}).get("exec_info", {})
+            if q.get("queue_remaining", 0) == 0:
+                pass  # don't override success/error animation
+
+    def _on_err(self, _ws, error):
+        print(f"[ComfBuddy WS] {error}")
+
+    def _on_close(self, _ws, code, msg):
+        print(f"[ComfBuddy WS] Disconnected ({code}), reconnecting…")
 
 
 # ─── Widget ───────────────────────────────────────────────────────────────────
 
 class BuddyWidget(QWidget):
+    # Signal emitted from the WS thread to safely update state on the GUI thread
+    state_changed = pyqtSignal(str)
+
     def __init__(self, cfg: dict):
         super().__init__()
         self.cfg = cfg
         self.s = cfg["scale"]           # pixels per logical pixel
         self._drag_pos = QPoint()
         self._bob_idx  = 0
+        self._state    = STATE_IDLE
+        self._reaction_remaining = 0    # countdown ticks for success/error anim
+        self._flash_on = False          # toggle for error red flash
 
         # ── frameless transparent always-on-top window ──
         self.setWindowFlags(
@@ -133,7 +214,7 @@ class BuddyWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         w = SPRITE_W * self.s
-        h = (SPRITE_H + 5) * self.s    # extra rows for shadow + bob headroom
+        h = (SPRITE_H + 12) * self.s   # extra rows for shadow + jump headroom
         self.setFixedSize(w, h)
 
         x, y = cfg.get("position", [200, 200])
@@ -144,10 +225,89 @@ class BuddyWidget(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(100)          # 100 ms per frame → ~10 fps
 
+        # ── state signal (thread-safe) ──
+        self.state_changed.connect(self._on_state_changed)
+
+        # ── WebSocket listener ──
+        ws_listener = ComfyWSListener(cfg["comfyui_url"], self._emit_state)
+        ws_listener.start()
+
+    def _emit_state(self, state: str):
+        """Called from WS thread — emit signal to cross into GUI thread."""
+        self.state_changed.emit(state)
+
+    def _on_state_changed(self, state: str):
+        """Handle state transitions on the GUI thread."""
+        prev = self._state
+
+        if state == STATE_WORKING and prev != STATE_WORKING:
+            self._state = STATE_WORKING
+            self._bob_idx = 0
+            print("[ComfBuddy] Generation started…")
+
+        elif state == STATE_SUCCESS:
+            self._state = STATE_SUCCESS
+            self._bob_idx = 0
+            self._reaction_remaining = REACTION_TICKS
+            self._play_sound_success()
+            print("[ComfBuddy] Generation complete!")
+
+        elif state == STATE_ERROR:
+            self._state = STATE_ERROR
+            self._bob_idx = 0
+            self._reaction_remaining = REACTION_TICKS
+            self._play_sound_error()
+            print("[ComfBuddy] Generation error!")
+
+    # ── sounds ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _play_sound_success():
+        """Play a happy 'ding' sound on success."""
+        threading.Thread(
+            target=lambda: (
+                winsound.Beep(880, 150),  # A5
+                winsound.Beep(1100, 150), # ~C#6
+                winsound.Beep(1320, 250), # E6
+            ),
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _play_sound_error():
+        """Play a descending 'buzz' sound on error."""
+        threading.Thread(
+            target=lambda: (
+                winsound.Beep(400, 200),
+                winsound.Beep(300, 300),
+            ),
+            daemon=True,
+        ).start()
+
     # ── animation tick ───────────────────────────────────────────────────────
 
     def _tick(self):
-        self._bob_idx = (self._bob_idx + 1) % len(BOB)
+        # Pick the right bob cycle for the current state
+        if self._state == STATE_WORKING:
+            cycle = BOB_WORK
+        elif self._state == STATE_SUCCESS:
+            cycle = BOB_JUMP
+            self._reaction_remaining -= 1
+            if self._reaction_remaining <= 0:
+                self._state = STATE_IDLE
+                self._bob_idx = 0
+        elif self._state == STATE_ERROR:
+            cycle = BOB_IDLE
+            self._flash_on = not self._flash_on
+            self._reaction_remaining -= 1
+            if self._reaction_remaining <= 0:
+                self._state = STATE_IDLE
+                self._flash_on = False
+                self._bob_idx = 0
+        else:
+            cycle = BOB_IDLE
+
+        self._bob_idx = (self._bob_idx + 1) % len(cycle)
         self.update()
 
     # ── painting ─────────────────────────────────────────────────────────────
@@ -156,23 +316,42 @@ class BuddyWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
-        s   = self.s
-        bob = BOB[self._bob_idx]        # logical-pixel vertical offset
+        s = self.s
+
+        # Pick bob cycle for current state
+        if self._state == STATE_WORKING:
+            cycle = BOB_WORK
+        elif self._state == STATE_SUCCESS:
+            cycle = BOB_JUMP
+        else:
+            cycle = BOB_IDLE
+
+        bob = cycle[self._bob_idx % len(cycle)]
+
+        # Extra vertical offset so jump doesn't clip at top
+        y_base = 10 * s   # headroom for jump animation
 
         # --- shadow: ellipse below sprite, shrinks when higher ---
-        base_y   = SPRITE_H * s + s
-        max_bob  = max(BOB)
-        bob_norm = (bob + max_bob) / (2 * max_bob) if max_bob else 0.5  # 0..1
-        alpha    = int(60 + 80 * (1 - bob_norm))       # darker when lower
-        sw       = int((6 + 2 * (1 - bob_norm)) * s)   # wider when lower
+        shadow_y = y_base + SPRITE_H * s + s
+        max_bob  = max(abs(min(cycle)), abs(max(cycle))) or 1
+        bob_norm = (bob + max_bob) / (2 * max_bob)
+        alpha    = int(60 + 80 * (1 - bob_norm))
+        sw       = int((6 + 2 * (1 - bob_norm)) * s)
         sh       = max(1, s)
         sx       = (SPRITE_W * s - sw) // 2
         painter.setBrush(QColor(0, 0, 0, alpha))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(sx, base_y, sw, sh)
+        painter.drawEllipse(sx, shadow_y, sw, sh)
+
+        # --- color tinting for states ---
+        tint = None
+        if self._state == STATE_ERROR and self._flash_on:
+            tint = QColor(255, 60, 60, 100)  # red flash overlay
+        elif self._state == STATE_SUCCESS:
+            tint = QColor(255, 255, 100, 50)  # golden glow
 
         # --- sprite ---
-        y_off = bob * s
+        y_off = y_base + bob * s
         for row_i, row in enumerate(SPRITE):
             for col_i, ci in enumerate(row):
                 if ci == 0:
@@ -180,7 +359,28 @@ class BuddyWidget(QWidget):
                 color = PAL[ci]
                 if color is None:
                     continue
-                painter.fillRect(col_i * s, row_i * s + y_off, s, s, color)
+                px = col_i * s
+                py = row_i * s + y_off
+                painter.fillRect(px, py, s, s, color)
+                # overlay tint
+                if tint and ci != 0:
+                    painter.fillRect(px, py, s, s, tint)
+
+        # --- sparkle particles on success ---
+        if self._state == STATE_SUCCESS and self._reaction_remaining > 0:
+            import math
+            tick = REACTION_TICKS - self._reaction_remaining
+            for i in range(6):
+                angle = (tick * 0.3 + i * math.pi / 3)
+                r = (tick * 1.5 + i * 2) * s * 0.3
+                cx = SPRITE_W * s // 2 + int(math.cos(angle) * r)
+                cy = y_off + SPRITE_H * s // 2 + int(math.sin(angle) * r)
+                sparkle_alpha = max(0, 255 - tick * 20)
+                sparkle_size = max(1, s // 2)
+                painter.fillRect(
+                    cx, cy, sparkle_size, sparkle_size,
+                    QColor(255, 255, 120, sparkle_alpha),
+                )
 
     # ── drag ─────────────────────────────────────────────────────────────────
 
