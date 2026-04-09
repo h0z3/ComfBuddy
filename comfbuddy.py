@@ -7,8 +7,26 @@ Floating ComfyUI desktop companion — right-click for shortcuts
 import sys
 import os
 import json
+import socket
 import subprocess
 from pathlib import Path
+
+# ─── Singleton lock ───────────────────────────────────────────────────────────
+# Bind a localhost TCP port to guarantee only one buddy runs at a time.
+# This makes auto-launch from the ComfyUI custom node safe to call repeatedly.
+SINGLETON_PORT = 51847   # arbitrary high port, change if it collides
+_singleton_sock = None   # kept alive for the lifetime of the process
+
+def _acquire_singleton_lock() -> bool:
+    global _singleton_sock
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", SINGLETON_PORT))
+        s.listen(1)
+    except OSError:
+        return False
+    _singleton_sock = s
+    return True
 
 try:
     import requests
@@ -290,6 +308,11 @@ class BuddyWidget(QWidget):
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
+    # Singleton check: only one buddy instance at a time
+    if not _acquire_singleton_lock():
+        print("[ComfBuddy] Already running. Exiting.")
+        return
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
 

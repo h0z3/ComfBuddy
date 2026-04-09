@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfbuddy"
+description = "A floating pixel-art desktop buddy for ComfyUI with quick shortcuts (clear VRAM, restart, open output folder)"
+version = "0.1.0"
+license = { file = "LICENSE" }
+authors = [{ name = "teq3l" }]
+dependencies = [
+    "PyQt6>=6.4.0",
+    "requests>=2.28.0",
+]
+requires-python = ">=3.9"
+readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/teq3l/ComfBuddy"
+Homepage = "https://github.com/teq3l/ComfBuddy"
+
+# ComfyUI Manager registry metadata
+[tool.comfy]
+PublisherId = "teq3l"
+DisplayName = "ComfBuddy"
+Description = "Floating pixel-art desktop buddy for ComfyUI with VRAM/restart shortcuts"

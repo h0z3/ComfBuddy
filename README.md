@@ -24,11 +24,32 @@ for the things you do every day with ComfyUI — right from a single right-click
 
 ## Installation
 
+### Option 1: Standalone (Recommended for non-ComfyUI users)
+
 ```bash
 git clone https://github.com/teq3l/ComfBuddy.git
 cd ComfBuddy
 pip install -r requirements.txt
 python comfbuddy.py
+```
+
+### Option 2: ComfyUI Custom Node (Auto-launches with ComfyUI)
+
+Clone into your ComfyUI's `custom_nodes/` directory:
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/teq3l/ComfBuddy.git
+cd ComfBuddy
+pip install -r requirements.txt
+```
+
+Then restart ComfyUI. The buddy will automatically launch in the background.
+
+**To disable auto-launch:**
+Set the environment variable before starting ComfyUI:
+```bash
+set COMFBUDDY_AUTOLAUNCH=0
 ```
 
 ## Usage
@@ -91,6 +112,12 @@ shell.
 PRs welcome — especially for new buddy sprites, extra menu actions, or
 cross-platform support. Open an issue first if you want to discuss a bigger
 change.
+
+## Built With
+
+Built with **vibe coding** alongside [Claude](https://claude.ai). The entire project —
+from pixel-art sprite to ComfyUI integration — came together in a single session of
+rapid iteration, feedback loops, and "let's just try it" energy.
 
 ## License
 
